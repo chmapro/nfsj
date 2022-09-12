@@ -1,0 +1,26 @@
+{
+  "blockAppendix": [
+    {
+      "blockName": {
+        "owner_account": "981844536",
+        "data_timestamp": "2020-09"
+      },
+      "owner": {
+        "owner_account": "981844536",
+        "owner_address": "nefu"
+      },
+      "blockHash": "Hash(En[data])"
+    },
+    {
+      "blockName": {
+        "owner_account": "2661418879",
+        "data_timestamp": "2020-09"
+      },
+      "owner": {
+        "owner_account": "2661418879",
+        "owner_address": "nefu"
+      },
+      "blockHash": "Hash(En[data])"
+    }
+  ]
+}
