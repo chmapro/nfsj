@@ -5,11 +5,9 @@ type BlockAppendixs struct {
 }
 
 type BlockAppendix struct {
-	BlockName  BlockName  `json:"blockName"`
-	Owner      Owner      `json:"owner"`
-	BlockHash  string     `json:"blockHash"`
-	AcceptList AcceptList `json:"accept_list"`
-	RejectList RejectList `json:"reject_list"`
+	BlockName BlockName `json:"blockName"`
+	Owner     Owner     `json:"owner"`
+	BlockHash string    `json:"blockHash"`
 }
 
 type BlockName struct {

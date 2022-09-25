@@ -19,6 +19,15 @@ type outputEvent struct {
 // data. Note that chaincode upgrade also calls this function to reset
 // or to migrate data.
 func (t *SimpleAsset) Init(stub shim.ChaincodeStubInterface) peer.Response {
+	var InitList = []byte
+	err := stub.PutState("AcceptList", InitList)
+	if err != nil {
+		return shim.Error("Failed to set asset: %s")
+	}
+	err := stub.PutState("RejectList", []byte(InitList))
+	if err != nil {
+		return shim.Error("Failed to set asset: %s")
+	}
 	fmt.Printf("init...")
 	return shim.Success(nil)
 }
