@@ -1,8 +1,12 @@
 package main
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"strconv"
+	"time"
 
 	"github.com/hyperledger/fabric-chaincode-go/shim"
 	"github.com/hyperledger/fabric-protos-go/peer"
@@ -11,6 +15,7 @@ import (
 // SimpleAsset implements a simple chaincode to manage an asset
 type SimpleAsset struct {
 }
+
 type outputEvent struct {
 	EventName string
 }
@@ -19,15 +24,6 @@ type outputEvent struct {
 // data. Note that chaincode upgrade also calls this function to reset
 // or to migrate data.
 func (t *SimpleAsset) Init(stub shim.ChaincodeStubInterface) peer.Response {
-	var InitList = []byte
-	err := stub.PutState("AcceptList", InitList)
-	if err != nil {
-		return shim.Error("Failed to set asset: %s")
-	}
-	err := stub.PutState("RejectList", []byte(InitList))
-	if err != nil {
-		return shim.Error("Failed to set asset: %s")
-	}
 	fmt.Printf("init...")
 	return shim.Success(nil)
 }
@@ -68,12 +64,12 @@ func (t *SimpleAsset) Invoke(stub shim.ChaincodeStubInterface) peer.Response {
 // it will override the value with the new one
 func set(stub shim.ChaincodeStubInterface, args []string) (string, error) {
 	if len(args) != 2 {
-		return "", fmt.Errorf("Incorrect arguments. Expecting a key and a value")
+		return "", fmt.Errorf("incorrect arguments. Expecting a key and a value")
 	}
 
 	err := stub.PutState(args[0], []byte(args[1]))
 	if err != nil {
-		return "", fmt.Errorf("Failed to set asset: %s", args[0])
+		return "", fmt.Errorf("failed to set asset: %s", args[0])
 	}
 	event := outputEvent{
 		EventName: "set",
@@ -88,14 +84,52 @@ func set(stub shim.ChaincodeStubInterface, args []string) (string, error) {
 
 //初始化区块附录文件
 func setBlockAppendix(stub shim.ChaincodeStubInterface, args []string) (string, error) {
-	//args["functionName", "blockappendixs", "json"]
+	// args["functionName", "ownerAccount"， "blockData"]
+	// 所需参数包括： "ownerAccount"， "ownerAddress"， "dataTimestamp"， "blockData"
+	// ownerAddress 由 hash(ownerAccount + dataTimeStamp) 生成
+	// 总长为3
+
 	if len(args) != 2 {
-		return "", fmt.Errorf("Incorrect arguments. Expecting a key and a value")
+		return "", fmt.Errorf("incorrect arguments. Expecting a key and a value")
 	}
 
-	err := stub.PutState(args[0], []byte(args[1]))
+	// 获取时间戳
+	dataTimeStamp := strconv.FormatInt(time.Now().Unix(), 10)
+
+	// 生成数据块的哈希值以及用户地址
+	blockHash := GetHash(args[2])
+	ownerAddress := GetHash(args[1] + dataTimeStamp)
+	blocNameHash := GetHash(ownerAddress + blockHash)
+
+	// 数据所有者的账户名和数据块生成的时间戳组合为 blockName,
+	blockName := BlockName{
+		OwnerAccount:  args[1],
+		DataTimestamp: dataTimeStamp,
+		BlockNameHash: blocNameHash,
+	}
+
+	owner := Owner{
+		OwnerAccount: args[1],
+		OwnerAddress: ownerAddress,
+	}
+
+	// 打包为附录文件
+	blockAppendix := BlockAppendix{
+		BlockName:  blockName,
+		BlockHash:  blockHash,
+		Owner:      owner,
+		AcceptList: []string{ownerAddress},
+		RejectList: []string{},
+	}
+	// 将附录文件对象序列化
+	blockAppendixJSON, err := json.Marshal(blockAppendix)
 	if err != nil {
-		return "", fmt.Errorf("Failed to set asset: %s", args[0])
+		return "", err
+	}
+
+	err = stub.PutState(blocNameHash, blockAppendixJSON)
+	if err != nil {
+		return "", fmt.Errorf("failed to set asset: %s", args[0])
 	}
 	event := outputEvent{
 		EventName: "BlockAppendix",
@@ -105,19 +139,45 @@ func setBlockAppendix(stub shim.ChaincodeStubInterface, args []string) (string, 
 		return "", err
 	}
 	err = stub.SetEvent("BlockAppendix", payload)
-	return args[1], nil
+	if err != nil {
+		return "", err
+	}
+	return blocNameHash, nil
 }
 
-//设置AcceptList
+// 设置AcceptList
 func setAcceptList(stub shim.ChaincodeStubInterface, args []string) (string, error) {
-	//args["functionName", "AcceptList", "list"]
+	// args["functionName", "blocNameHash", "ownerAddress"]	其中ownerAddress为被验证用户的地址
 	if len(args) != 2 {
-		return "", fmt.Errorf("Incorrect arguments. Expecting a key and a value")
+		return "", fmt.Errorf("incorrect arguments. Expecting a key and a value")
 	}
 
-	err := stub.PutState(args[0], []byte(args[1]))
+	// 获取附录文件
+	blockAppendixJSON, err := stub.GetState(args[1])
+	//owner = Owner()
+
 	if err != nil {
-		return "", fmt.Errorf("Failed to set asset: %s", args[0])
+		return "", err
+	} else if blockAppendixJSON == nil {
+		return "", fmt.Errorf("the Appendix of blockHash %s doesn't exist", args[1])
+	}
+
+	blockAppendix := new(BlockAppendix)
+	// 反序列化
+	err = json.Unmarshal(blockAppendixJSON, blockAppendix)
+	if err != nil {
+		return "", err
+	}
+	blockAppendix.AcceptList = append(blockAppendix.AcceptList, args[2])
+
+	blockAppendixJSON, err = json.Marshal(blockAppendix)
+	if err != nil {
+		return "", err
+	}
+
+	err = stub.PutState(args[1], blockAppendixJSON)
+	if err != nil {
+		return "", fmt.Errorf("failed to set asset: %s", args[0])
 	}
 	event := outputEvent{
 		EventName: "setAcceptList",
@@ -127,19 +187,42 @@ func setAcceptList(stub shim.ChaincodeStubInterface, args []string) (string, err
 		return "", err
 	}
 	err = stub.SetEvent("AcceptList", payload)
-	return args[1], nil
+	return fmt.Sprintf("setAcceptList add %s successful.", args[1]), nil
+
 }
 
 //设置RejectList
 func setRejectList(stub shim.ChaincodeStubInterface, args []string) (string, error) {
-	//args["functionName", "RejectList", "list"]
+	//args["functionName", "blocNameHash", "ownerAddress"]
 	if len(args) != 2 {
-		return "", fmt.Errorf("Incorrect arguments. Expecting a key and a value")
+		return "", fmt.Errorf("incorrect arguments. Expecting a key and a value")
 	}
 
-	err := stub.PutState(args[0], []byte(args[1]))
+	// 获取附录文件
+	blockAppendixJSON, err := stub.GetState(args[1])
+
 	if err != nil {
-		return "", fmt.Errorf("Failed to set asset: %s", args[0])
+		return "", err
+	} else if blockAppendixJSON == nil {
+		return "", fmt.Errorf("the Appendix of blockHash %s doesn't exist", args[1])
+	}
+
+	blockAppendix := new(BlockAppendix)
+	// 反序列化
+	err = json.Unmarshal(blockAppendixJSON, blockAppendix)
+	if err != nil {
+		return "", err
+	}
+	blockAppendix.RejectList = append(blockAppendix.RejectList, args[2])
+
+	blockAppendixJSON, err = json.Marshal(blockAppendix)
+	if err != nil {
+		return "", err
+	}
+
+	err = stub.PutState(args[1], blockAppendixJSON)
+	if err != nil {
+		return "", fmt.Errorf("failed to set asset: %s", args[0])
 	}
 	event := outputEvent{
 		EventName: "setRejectList",
@@ -155,85 +238,90 @@ func setRejectList(stub shim.ChaincodeStubInterface, args []string) (string, err
 // Get returns the value of the specified asset key
 func get(stub shim.ChaincodeStubInterface, args []string) (string, error) {
 	if len(args) != 1 {
-		return "", fmt.Errorf("Incorrect arguments. Expecting a key")
+		return "", fmt.Errorf("incorrect arguments. Expecting a key")
 	}
 
 	value, err := stub.GetState(args[0])
 	if err != nil {
-		return "", fmt.Errorf("Failed to get asset: %s with error: %s", args[0], err)
+		return "", fmt.Errorf("failed to get asset: %s with error: %s", args[0], err)
 	}
 	if value == nil {
-		return "", fmt.Errorf("Asset not found: %s", args[0])
+		return "", fmt.Errorf("asset not found: %s", args[0])
 	}
 	return string(value), nil
 }
 
 //获取数据拥有者
 func getDataOwnerAddress(stub shim.ChaincodeStubInterface, args []string) (string, error) {
-	//args["functionName", "blockname", "DataTimestamp"]
-	if len(args) != 2 {
-		return "", fmt.Errorf("Incorrect arguments. Expecting a key")
+	//args["functionName", "blocNameHash"]
+	if len(args) != 1 {
+		return "", fmt.Errorf("incorrect arguments. Expecting a key")
 	}
+	// 获取附录文件
+	blockAppendixJSON, err := stub.GetState(args[1])
 
-	value, err := stub.GetState(args[0])
 	if err != nil {
-		return "", fmt.Errorf("Failed to get asset: %s with error: %s", args[0], err)
-	}
-	if value == nil {
-		return "", fmt.Errorf("Asset not found: %s", args[0])
-	}
-
-	var blockAppendixs BlockAppendixs
-
-	json.Unmarshal(value, &blockAppendixs)
-
-	for i := 0; i < len(blockAppendixs.BlockAppendixs); i++ {
-		if args[1] == blockAppendixs.BlockAppendixs[i].BlockName.OwnerAccount {
-			if args[2] == blockAppendixs.BlockAppendixs[i].BlockName.DataTimestamp {
-				return blockAppendixs.BlockAppendixs[i].Owner.OwnerAccount, nil
-			}
-		}
+		return "", err
+	} else if blockAppendixJSON == nil {
+		return "", fmt.Errorf("the Appendix of blockHash %s doesn't exist", args[1])
 	}
 
-	return "", nil
+	blockAppendix := new(BlockAppendix)
+	// 反序列化
+	err = json.Unmarshal(blockAppendixJSON, blockAppendix)
+	if err != nil {
+		return "", err
+	}
+
+	dataUser := blockAppendix.Owner.OwnerAddress
+	return dataUser, nil
+}
+
+func GetHash(data string) string {
+	_sha1 := sha256.New()
+	_sha1.Write([]byte(data))
+	return hex.EncodeToString(_sha1.Sum([]byte("")))
 }
 
 //获取权限设置
 func isBlockPermission(stub shim.ChaincodeStubInterface, args []string) (string, error) {
 	//args["functionName", "Owners"]
 	if len(args) != 2 {
-		return "", fmt.Errorf("Incorrect arguments. Expecting a key")
+		return "", fmt.Errorf("incorrect arguments. Expecting a key")
 	}
 
 	value, err := stub.GetState(args[0])
 	if err != nil {
-		return "", fmt.Errorf("Failed to get asset: %s with error: %s", args[0], err)
+		return "", fmt.Errorf("failed to get asset: %s with error: %s", args[0], err)
 	}
 	if value == nil {
-		return "", fmt.Errorf("Asset not found: %s", args[0])
+		return "", fmt.Errorf("asset not found: %s", args[0])
 	}
 
 	var blockAppendixs BlockAppendixs
 
-	json.Unmarshal(value, &blockAppendixs)
+	err = json.Unmarshal(value, &blockAppendixs)
+	if err != nil {
+		return "", err
+	}
 
-	var acceptlist []Owner
-	var rejectList []Owner
+	var acceptlist []string
+	var rejectList []string
 
 	for i := 0; i < len(blockAppendixs.BlockAppendixs); i++ {
-		acceptlist = blockAppendixs.BlockAppendixs[i].AcceptList.Owners
-		rejectList = blockAppendixs.BlockAppendixs[i].RejectList.Owners
+		acceptlist = blockAppendixs.BlockAppendixs[i].AcceptList
+		rejectList = blockAppendixs.BlockAppendixs[i].RejectList
 	}
 
 	for i := 0; i < len(acceptlist); {
-		if args[1] == acceptlist[i].OwnerAddress {
-			return string(1), nil
+		if args[1] == acceptlist[i] {
+			return strconv.Itoa(1), nil
 		}
 	}
 
 	for i := 0; i < len(rejectList); {
-		if args[1] == rejectList[i].OwnerAddress {
-			return string(0), nil
+		if args[1] == rejectList[i] {
+			return strconv.Itoa(0), nil
 		}
 	}
 	return "not found", nil
